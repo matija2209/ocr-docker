@@ -1,5 +1,9 @@
 FROM vllm/vllm-openai:nightly
 
+# git is needed for pip install from GitHub
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+
 # Install newer Transformers so GLM-OCR is recognized
 RUN pip uninstall -y transformers || true \
  && pip install -U git+https://github.com/huggingface/transformers.git
