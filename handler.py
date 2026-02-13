@@ -8,6 +8,7 @@ then forwards incoming RunPod jobs to the local OpenAI-compatible API.
 import os
 import time
 import subprocess
+import threading
 import logging
 import requests
 import runpod
@@ -22,20 +23,43 @@ MAX_MODEL_LEN = os.getenv("MAX_MODEL_LEN", "8192")
 ENFORCE_EAGER = os.getenv("ENFORCE_EAGER", "1").lower() in {"1", "true", "yes"}
 
 
+def stream_output(pipe):
+    """Stream vLLM logs into worker logs for easier debugging."""
+    try:
+        for line in pipe:
+            line = line.strip()
+            if line:
+                log.info("[vllm] %s", line)
+    except Exception as exc:
+        log.exception("Error while streaming vLLM logs: %s", exc)
+    finally:
+        pipe.close()
+
+
 def start_vllm():
-    """Start vLLM as a background process."""
+    """Start vLLM as a background process with log forwarding."""
     cmd = [
         "vllm", "serve", MODEL_NAME,
         "--allowed-local-media-path", "/",
         "--port", str(VLLM_PORT),
         "--max-model-len", MAX_MODEL_LEN,
-        "--speculative-config.method", "mtp",
-        "--speculative-config.num_speculative_tokens", "1",
     ]
     if ENFORCE_EAGER:
         cmd.append("--enforce-eager")
-    log.info(f"Starting vLLM: {' '.join(cmd)}")
-    process = subprocess.Popen(cmd)
+
+    log.info("Starting vLLM: %s", " ".join(cmd))
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    if process.stdout is not None:
+        t = threading.Thread(target=stream_output, args=(process.stdout,), daemon=True)
+        t.start()
+
     return process
 
 
@@ -78,11 +102,18 @@ def handler(job):
         }
 
     job_input = dict(job_input)
-    log.info(f"Job {job_id}: received request")
+    log.info("Job %s: received request", job_id)
 
-    # Set model default if not provided
+    # Set model default if not provided.
     if "model" not in job_input:
         job_input["model"] = MODEL_NAME
+
+    # vLLM chat completions requires messages.
+    if "messages" not in job_input:
+        log.error("Job %s: missing required 'messages' field", job_id)
+        return {
+            "error": "Input must contain a 'messages' field for Chat Completions API."
+        }
 
     try:
         response = requests.post(
@@ -90,12 +121,24 @@ def handler(job):
             json=job_input,
             timeout=600,
         )
+
+        if response.status_code != 200:
+            log.error(
+                "Job %s: vLLM returned %s with body: %s",
+                job_id,
+                response.status_code,
+                response.text,
+            )
+
         response.raise_for_status()
         result = response.json()
-        log.info(f"Job {job_id}: completed")
+        log.info("Job %s: completed", job_id)
         return result
-    except requests.exceptions.RequestException as e:
-        log.error(f"Job {job_id}: failed - {e}")
+    except requests.exceptions.RequestException as exc:
+        detail = ""
+        if getattr(exc, "response", None) is not None:
+            detail = f" | response_body={exc.response.text}"
+        log.error("Job %s: failed - %s%s", job_id, exc, detail)
         raise
 
 
