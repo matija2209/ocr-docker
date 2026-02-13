@@ -45,24 +45,31 @@ Please output the information in the image in the following JSON format:
 }
 ```
 
-### API example
+### API example (RunPod Queue endpoint)
 
-Once deployed, the endpoint serves an OpenAI-compatible API:
+This worker is a **RunPod Serverless Queue** worker, so requests must be sent to
+RunPod's `/run` or `/runsync` endpoint and wrapped in `input`.
+
+If you send raw OpenAI payloads directly, the worker logs:
+`Job has missing field(s): id or input.`
 
 ```bash
-curl http://<your-endpoint>:8080/v1/chat/completions \
+curl -X POST "https://api.runpod.ai/v2/<ENDPOINT_ID>/runsync" \
+  -H "Authorization: Bearer <RUNPOD_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "zai-org/GLM-OCR",
-    "messages": [
-      {
-        "role": "user",
-        "content": [
-          {"type": "image_url", "image_url": {"url": "https://example.com/document.png"}},
-          {"type": "text", "text": "Text Recognition:"}
-        ]
-      }
-    ]
+    "input": {
+      "model": "zai-org/GLM-OCR",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {"type": "image_url", "image_url": {"url": "https://upload.wikimedia.org/wikipedia/commons/9/99/ReceiptSwiss.jpg"}},
+            {"type": "text", "text": "Text Recognition:"}
+          ]
+        }
+      ]
+    }
   }'
 ```
 

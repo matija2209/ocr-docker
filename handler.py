@@ -18,6 +18,8 @@ log = logging.getLogger("handler")
 VLLM_PORT = 8080
 VLLM_URL = f"http://localhost:{VLLM_PORT}"
 MODEL_NAME = os.getenv("MODEL_NAME", "zai-org/GLM-OCR")
+MAX_MODEL_LEN = os.getenv("MAX_MODEL_LEN", "8192")
+ENFORCE_EAGER = os.getenv("ENFORCE_EAGER", "1").lower() in {"1", "true", "yes"}
 
 
 def start_vllm():
@@ -26,13 +28,18 @@ def start_vllm():
         "vllm", "serve", MODEL_NAME,
         "--allowed-local-media-path", "/",
         "--port", str(VLLM_PORT),
+        "--max-model-len", MAX_MODEL_LEN,
+        "--speculative-config.method", "mtp",
+        "--speculative-config.num_speculative_tokens", "1",
     ]
+    if ENFORCE_EAGER:
+        cmd.append("--enforce-eager")
     log.info(f"Starting vLLM: {' '.join(cmd)}")
     process = subprocess.Popen(cmd)
     return process
 
 
-def wait_for_vllm(timeout=300):
+def wait_for_vllm(timeout=600):
     """Wait for vLLM to be ready."""
     start = time.time()
     while time.time() - start < timeout:
@@ -60,8 +67,18 @@ def handler(job):
         "temperature": 0.0
     }
     """
-    job_input = job["input"]
-    log.info(f"Job {job.get('id', 'unknown')}: received request")
+    job_id = job.get("id", "unknown")
+    job_input = job.get("input")
+    if not isinstance(job_input, dict):
+        return {
+            "error": (
+                "Invalid request format. Expected {'input': {...}} as the "
+                "job payload."
+            )
+        }
+
+    job_input = dict(job_input)
+    log.info(f"Job {job_id}: received request")
 
     # Set model default if not provided
     if "model" not in job_input:
@@ -71,14 +88,14 @@ def handler(job):
         response = requests.post(
             f"{VLLM_URL}/v1/chat/completions",
             json=job_input,
-            timeout=300,
+            timeout=600,
         )
         response.raise_for_status()
         result = response.json()
-        log.info(f"Job {job.get('id', 'unknown')}: completed")
+        log.info(f"Job {job_id}: completed")
         return result
     except requests.exceptions.RequestException as e:
-        log.error(f"Job {job.get('id', 'unknown')}: failed - {e}")
+        log.error(f"Job {job_id}: failed - {e}")
         raise
 
 
